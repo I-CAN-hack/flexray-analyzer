@@ -9,24 +9,27 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   windows:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6.0.1
     - name: Build
       run: |
         cmake -B ${{github.workspace}}/build -A x64
         cmake --build ${{github.workspace}}/build --config Release
     - name: Upload windows build
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6.0.0
       with:
         name: windows
         path: ${{github.workspace}}/build/Analyzers/Release/*.dll
   macos:
     runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6.0.1
     - name: Build
       run: |
         cmake -B ${{github.workspace}}/build/x86_64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
@@ -34,14 +37,14 @@ jobs:
         cmake -B ${{github.workspace}}/build/arm64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
         cmake --build ${{github.workspace}}/build/arm64
     - name: Upload MacOS x86_64 build
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6.0.0
       with:
         name: macos_x86_64
         path: |
           ${{github.workspace}}/build/x86_64/Analyzers/*.so
           ${{github.workspace}}/build/x86_64/Analyzers/*.dylib
     - name: Upload MacOS arm64 build
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6.0.0
       with:
         name: macos_arm64
         path: |
@@ -50,34 +53,41 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6.0.1
     - name: Build
       run: |
         cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release
         cmake --build ${{github.workspace}}/build
     - name: Upload Linux build
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6.0.0
       with:
         name: linux
         path: ${{github.workspace}}/build/Analyzers/*.so
   publish:
     needs: [windows, macos, linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
     - name: download individual builds
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8.0.1
       with:
         path: ${{github.workspace}}/artifacts
     - name: zip
       run: |
         cd ${{github.workspace}}/artifacts
         zip -r ${{github.workspace}}/analyzer.zip .
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v6.0.0
       with:
         name: all-platforms
         path: ${{github.workspace}}/artifacts/**
-    - name: create release
-      uses: softprops/action-gh-release@v1
+    - name: create or update release
       if: startsWith(github.ref, 'refs/tags/')
-      with:
-          files: ${{github.workspace}}/analyzer.zip
+      run: |
+        if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+          gh release upload "${GITHUB_REF_NAME}" "${GITHUB_WORKSPACE}/analyzer.zip" --clobber
+        else
+          gh release create "${GITHUB_REF_NAME}" "${GITHUB_WORKSPACE}/analyzer.zip" --generate-notes
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
