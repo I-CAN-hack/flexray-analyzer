@@ -43,6 +43,18 @@ struct WakeupTiming
 	U32 mRxWindowBits = 0;
 };
 
+enum class FlexRayMarkerType : U8
+{
+	DataBit,
+	SyntaxBit
+};
+
+struct FlexRayMarker
+{
+	U64 mSample = 0;
+	FlexRayMarkerType mType = FlexRayMarkerType::DataBit;
+};
+
 U8 GetWireBit( BitState state, bool invert_input )
 {
 	U8 bit = state == BIT_HIGH ? 1 : 0;
@@ -382,6 +394,7 @@ void FlexRayAnalyzer::WorkerThread()
 		U32 bit_index = 0;
 		U64 last_sample = tss_end_sample;
 		bool packet_has_segments = false;
+		std::vector<FlexRayMarker> packet_markers;
 
 		auto commit_packet = [&]( U64 end_sample, U8 frame_flags, FlexRayFrameRecord record ) {
 			if( record.mIsError == false && record.mSymbolName.empty() == true )
@@ -411,6 +424,13 @@ void FlexRayAnalyzer::WorkerThread()
 
 				frame_v2_packet.AddString( "payload", format_payload( record.mPayload ).c_str() );
 				mResults->AddFrameV2( frame_v2_packet, "frame", tss_start_sample, end_sample );
+			}
+
+			for( const FlexRayMarker& marker : packet_markers )
+			{
+				mResults->AddMarker( marker.mSample,
+									 marker.mType == FlexRayMarkerType::DataBit ? AnalyzerResults::Dot : AnalyzerResults::ErrorX,
+									 mSettings.mInputChannel );
 			}
 
 			if( record.mIsError == true && packet_has_segments == false )
@@ -452,11 +472,20 @@ void FlexRayAnalyzer::WorkerThread()
 			}
 		};
 
-		auto read_expected_bit = [&]( U8 expected_bit, const char* label, std::string& error_text, U64* observed_sample = nullptr ) -> bool {
+		auto add_bit_marker = [&]( U64 sample_number, FlexRayMarkerType marker_type ) {
+			FlexRayMarker marker;
+			marker.mSample = sample_number;
+			marker.mType = marker_type;
+			packet_markers.push_back( marker );
+		};
+
+		auto read_expected_bit = [&]( U8 expected_bit, const char* label, std::string& error_text, U64* observed_sample = nullptr,
+									 FlexRayMarkerType marker_type = FlexRayMarkerType::SyntaxBit ) -> bool {
 			U8 actual_bit = 0;
 			U64 sample_number = 0;
 			read_bit( bit_index, actual_bit, sample_number );
 			last_sample = sample_number;
+			add_bit_marker( sample_number, marker_type );
 
 			if( observed_sample != nullptr )
 				*observed_sample = sample_number;
@@ -496,6 +525,7 @@ void FlexRayAnalyzer::WorkerThread()
 				U64 sample_number = 0;
 				read_bit( bit_index, sampled_bit, sample_number );
 				last_sample = sample_number;
+				add_bit_marker( sample_number, FlexRayMarkerType::DataBit );
 				value = static_cast<U8>( ( value << 1 ) | sampled_bit );
 				++bit_index;
 
@@ -518,6 +548,7 @@ void FlexRayAnalyzer::WorkerThread()
 		U64 fss_sample = 0;
 		read_bit( bit_index, fss_bit, fss_sample );
 		last_sample = fss_sample;
+		add_bit_marker( fss_sample, FlexRayMarkerType::SyntaxBit );
 
 		if( fss_bit != 1 )
 			continue;
@@ -536,6 +567,7 @@ void FlexRayAnalyzer::WorkerThread()
 		U64 header_start_sample = 0;
 		read_bit( bit_index, first_bss_high, header_start_sample );
 		last_sample = header_start_sample;
+		add_bit_marker( header_start_sample, FlexRayMarkerType::SyntaxBit );
 		if( first_bss_high != 1 )
 			continue;
 		header_byte_start_samples.push_back( header_start_sample );
@@ -543,6 +575,7 @@ void FlexRayAnalyzer::WorkerThread()
 
 		U8 first_bss_low = 0;
 		read_bit( bit_index, first_bss_low, last_sample );
+		add_bit_marker( last_sample, FlexRayMarkerType::SyntaxBit );
 		if( first_bss_low != 0 )
 		{
 			if( observed_tss_bits >= kCasRxLowMinBits && observed_tss_bits <= kCasRxLowMaxBits )
@@ -581,6 +614,7 @@ void FlexRayAnalyzer::WorkerThread()
 			U64 sample_number = 0;
 			read_bit( bit_index, sampled_bit, sample_number );
 			last_sample = sample_number;
+			add_bit_marker( sample_number, FlexRayMarkerType::DataBit );
 			header_bit_samples.push_back( sample_number );
 			first_header_byte = static_cast<U8>( ( first_header_byte << 1 ) | sampled_bit );
 			++bit_index;
@@ -791,6 +825,7 @@ void FlexRayAnalyzer::WorkerThread()
 		U64 post_fes_sample = 0;
 		read_bit( bit_index, post_fes_bit, post_fes_sample );
 		last_sample = post_fes_sample;
+		add_bit_marker( post_fes_sample, FlexRayMarkerType::SyntaxBit );
 
 		if( post_fes_bit == 0 )
 		{
@@ -807,6 +842,7 @@ void FlexRayAnalyzer::WorkerThread()
 				read_bit( bit_index, bit, sample_number );
 				last_sample = sample_number;
 				dts_end_sample = sample_number;
+				add_bit_marker( sample_number, FlexRayMarkerType::SyntaxBit );
 
 				if( bit == 1 )
 				{
@@ -836,6 +872,7 @@ void FlexRayAnalyzer::WorkerThread()
 				U64 sample_number = 0;
 				read_bit( bit_index, cid_value, sample_number );
 				last_sample = sample_number;
+				add_bit_marker( sample_number, FlexRayMarkerType::SyntaxBit );
 
 				if( cid_value != 1 )
 				{
@@ -882,6 +919,7 @@ void FlexRayAnalyzer::WorkerThread()
 				U64 sample_number = 0;
 				read_bit( bit_index, cid_value, sample_number );
 				last_sample = sample_number;
+				add_bit_marker( sample_number, FlexRayMarkerType::SyntaxBit );
 
 				if( cid_value != 1 )
 				{
