@@ -219,6 +219,33 @@ void FlexRayAnalyzer::WorkerThread()
 			*packet_has_segments = true;
 	};
 
+	auto add_visual_segment = [&]( U64 start_sample, U64 end_sample, U8 frame_type, U8 frame_flags, const std::string& short_text,
+								   const std::string& long_text, bool* packet_has_segments = nullptr ) {
+		Frame frame;
+		frame.mStartingSampleInclusive = start_sample;
+		frame.mEndingSampleInclusive = std::max( start_sample, end_sample );
+		frame.mData1 = 0;
+		frame.mData2 = 0;
+		frame.mType = frame_type;
+		frame.mFlags = frame_flags;
+
+		FlexRaySegmentRecord record;
+		record.mShortText = short_text;
+		record.mLongText = long_text.empty() ? short_text : long_text;
+		mResults->AddFlexRaySegment( frame, std::move( record ) );
+
+		if( packet_has_segments != nullptr )
+			*packet_has_segments = true;
+	};
+
+	auto add_frame_v2_only = [&]( U64 start_sample, U64 end_sample, const char* frame_v2_type,
+								  const std::function<void( FrameV2& )>& populate_frame_v2 ) {
+		FrameV2 frame_v2;
+		if( populate_frame_v2 )
+			populate_frame_v2( frame_v2 );
+		mResults->AddFrameV2( frame_v2, frame_v2_type, start_sample, std::max( start_sample, end_sample ) );
+	};
+
 	auto commit_record = [&]( U64 start_sample, U64 end_sample, U8 frame_flags, FlexRayFrameRecord record ) {
 		record.mStartSample = start_sample;
 		record.mEndSample = end_sample;
@@ -448,7 +475,8 @@ void FlexRayAnalyzer::WorkerThread()
 			return true;
 		};
 
-		auto read_extended_byte = [&]( U8& value, std::string& error_text, U64* byte_start_sample = nullptr, U64* byte_end_sample = nullptr ) -> bool {
+		auto read_extended_byte = [&]( U8& value, std::string& error_text, U64* byte_start_sample = nullptr, U64* byte_end_sample = nullptr,
+									  std::vector<U64>* data_bit_samples = nullptr ) -> bool {
 			U64 sample_number = 0;
 
 			if( read_expected_bit( 1, "BSS high", error_text, &sample_number ) == false )
@@ -470,6 +498,9 @@ void FlexRayAnalyzer::WorkerThread()
 				last_sample = sample_number;
 				value = static_cast<U8>( ( value << 1 ) | sampled_bit );
 				++bit_index;
+
+				if( data_bit_samples != nullptr )
+					data_bit_samples->push_back( sample_number );
 
 				if( byte_end_sample != nullptr )
 					*byte_end_sample = sample_number;
@@ -495,6 +526,10 @@ void FlexRayAnalyzer::WorkerThread()
 
 		std::vector<U8> header_bytes;
 		header_bytes.reserve( kHeaderByteCount );
+		std::vector<U64> header_bit_samples;
+		header_bit_samples.reserve( kHeaderByteCount * 8 );
+		std::vector<U64> header_byte_start_samples;
+		header_byte_start_samples.reserve( kHeaderByteCount );
 		std::string syntax_error;
 
 		U8 first_bss_high = 0;
@@ -503,6 +538,7 @@ void FlexRayAnalyzer::WorkerThread()
 		last_sample = header_start_sample;
 		if( first_bss_high != 1 )
 			continue;
+		header_byte_start_samples.push_back( header_start_sample );
 		++bit_index;
 
 		U8 first_bss_low = 0;
@@ -545,6 +581,7 @@ void FlexRayAnalyzer::WorkerThread()
 			U64 sample_number = 0;
 			read_bit( bit_index, sampled_bit, sample_number );
 			last_sample = sample_number;
+			header_bit_samples.push_back( sample_number );
 			first_header_byte = static_cast<U8>( ( first_header_byte << 1 ) | sampled_bit );
 			++bit_index;
 		}
@@ -557,10 +594,11 @@ void FlexRayAnalyzer::WorkerThread()
 			U64 byte_start_sample = 0;
 			U64 byte_end_sample = 0;
 
-			if( read_extended_byte( header_byte, syntax_error, &byte_start_sample, &byte_end_sample ) == false )
+			if( read_extended_byte( header_byte, syntax_error, &byte_start_sample, &byte_end_sample, &header_bit_samples ) == false )
 				break;
 
 			header_bytes.push_back( header_byte );
+			header_byte_start_samples.push_back( byte_start_sample );
 			header_end_sample = byte_end_sample;
 		}
 
@@ -596,20 +634,58 @@ void FlexRayAnalyzer::WorkerThread()
 			header_text << "ID " << format_hex( record.mFrameId, 3 )
 						<< " Cyc " << static_cast<U32>( record.mCycle )
 						<< " Len " << static_cast<U32>( record.mPayloadLengthWords ) * 2 << "B";
-			add_segment( segment_start( header_start_sample ), segment_end( header_end_sample ), FlexRayHeaderField, 0, "Hdr",
-						 header_text.str(), "header_field", &packet_has_segments, [&]( FrameV2& frame_v2 ) {
-							 frame_v2.AddString( "identifier", format_hex( record.mFrameId, 3 ).c_str() );
-							 frame_v2.AddByte( "cycle", record.mCycle );
-							 frame_v2.AddByte( "payload_length_words", record.mPayloadLengthWords );
-							 frame_v2.AddByte( "payload_length_bytes", static_cast<U8>( record.mPayloadLengthWords * 2 ) );
-							 frame_v2.AddBoolean( "reserved_bit", record.mReservedBit );
-							 frame_v2.AddBoolean( "payload_preamble", record.mPayloadPreamble );
-							 frame_v2.AddBoolean( "null_frame", record.mNullFrame );
-							 frame_v2.AddBoolean( "sync_frame", record.mSyncFrame );
-							 frame_v2.AddBoolean( "startup_frame", record.mStartupFrame );
-							 frame_v2.AddString( "header_crc", format_hex( record.mHeaderCrc, 3 ).c_str() );
-							 frame_v2.AddBoolean( "header_crc_ok", record.mHeaderCrcOk );
-						 } );
+			add_frame_v2_only( segment_start( header_start_sample ), segment_end( header_end_sample ), "header_field", [&]( FrameV2& frame_v2 ) {
+				frame_v2.AddString( "identifier", format_hex( record.mFrameId, 3 ).c_str() );
+				frame_v2.AddByte( "cycle", record.mCycle );
+				frame_v2.AddByte( "payload_length_words", record.mPayloadLengthWords );
+				frame_v2.AddByte( "payload_length_bytes", static_cast<U8>( record.mPayloadLengthWords * 2 ) );
+				frame_v2.AddBoolean( "reserved_bit", record.mReservedBit );
+				frame_v2.AddBoolean( "payload_preamble", record.mPayloadPreamble );
+				frame_v2.AddBoolean( "null_frame", record.mNullFrame );
+				frame_v2.AddBoolean( "sync_frame", record.mSyncFrame );
+				frame_v2.AddBoolean( "startup_frame", record.mStartupFrame );
+				frame_v2.AddString( "header_crc", format_hex( record.mHeaderCrc, 3 ).c_str() );
+				frame_v2.AddBoolean( "header_crc_ok", record.mHeaderCrcOk );
+			} );
+
+			if( header_bit_samples.size() == ( kHeaderByteCount * 8 ) && header_byte_start_samples.size() == kHeaderByteCount )
+			{
+				auto header_subfield_start_sample = [&]( U32 bit_offset ) {
+					if( ( bit_offset % 8 ) == 0 )
+						return header_byte_start_samples.at( bit_offset / 8 );
+
+					return segment_start( header_bit_samples.at( bit_offset ) );
+				};
+
+				auto add_header_subfield = [&]( U32 bit_offset, U32 bit_count, const std::string& short_text, const std::string& long_text ) {
+					add_visual_segment( header_subfield_start_sample( bit_offset ),
+										segment_end( header_bit_samples.at( bit_offset + bit_count - 1 ) ), FlexRayHeaderField, 0,
+										short_text, long_text, &packet_has_segments );
+				};
+
+				add_header_subfield( 0, 5, "Flg", "Header flags" );
+				add_header_subfield( 5, 11, "ID " + format_hex( record.mFrameId, 3 ), "Frame identifier " + format_hex( record.mFrameId, 3 ) );
+
+				{
+					std::ostringstream length_text;
+					length_text << "Len " << static_cast<U32>( record.mPayloadLengthWords ) * 2 << "B";
+					add_header_subfield( 16, 7, length_text.str(), "Payload length " + length_text.str().substr( 4 ) );
+				}
+
+				add_header_subfield( 23, 11, "HCRC " + format_hex( record.mHeaderCrc, 3 ),
+									 "Header CRC " + format_hex( record.mHeaderCrc, 3 ) );
+
+				{
+					std::ostringstream cycle_text;
+					cycle_text << "Cyc " << static_cast<U32>( record.mCycle );
+					add_header_subfield( 34, 6, cycle_text.str(), "Cycle " + std::to_string( static_cast<U32>( record.mCycle ) ) );
+				}
+			}
+			else
+			{
+				add_visual_segment( segment_start( header_start_sample ), segment_end( header_end_sample ), FlexRayHeaderField, 0, "Hdr",
+									header_text.str(), &packet_has_segments );
+			}
 		}
 
 		std::vector<U8> payload_bits;
