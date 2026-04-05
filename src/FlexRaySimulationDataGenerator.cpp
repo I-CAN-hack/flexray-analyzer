@@ -10,6 +10,8 @@ const U32 kHeaderCrcInit = 0x01A;
 const U32 kFrameCrcPolynomial = 0x5D6DCB;
 const U32 kFrameCrcInitA = 0xFEDCBA;
 const U32 kFrameCrcInitB = 0xABCDEF;
+const U32 kSimulationInitialIdleBits = 16;
+const U32 kSimulationInterFrameIdleBits = 11;
 const U32 kSimulationTssBits = 5;
 
 void AppendBits( std::vector<U8>& bits, U32 value, U32 bit_count )
@@ -72,6 +74,9 @@ U32 FlexRaySimulationDataGenerator::GenerateSimulationData( U64 largest_sample_r
 
 	while( mSimulationData.GetCurrentSampleNumber() < adjusted_largest_sample_requested )
 	{
+		if( mFrameCounter == 0 && mSimulationData.GetCurrentSampleNumber() == 0 )
+			OutputBit( 1, kSimulationInitialIdleBits );
+
 		const U8 cycle = static_cast<U8>( mFrameCounter % 64 );
 
 		if( ( mFrameCounter % 2 ) == 0 )
@@ -125,7 +130,6 @@ void FlexRaySimulationDataGenerator::OutputFrame( U16 frame_id, U8 cycle, const 
 	const std::vector<U8> frame_crc_bytes = { static_cast<U8>( ( frame_crc >> 16 ) & 0xFF ), static_cast<U8>( ( frame_crc >> 8 ) & 0xFF ),
 											  static_cast<U8>( frame_crc & 0xFF ) };
 
-	OutputBit( 1, 8 );
 	OutputBit( 0, kSimulationTssBits );
 	OutputBit( 1, 1 ); // FSS
 
@@ -148,6 +152,11 @@ void FlexRaySimulationDataGenerator::OutputFrame( U16 frame_id, U8 cycle, const 
 	}
 
 	OutputBit( 1, 11 ); // CID
+
+	// The worker restarts frame detection from the sample point inside the last CID bit.
+	// Add a full extra idle delimiter so the next demo frame still has enough preceding
+	// high time to be recognized as a fresh TSS instead of being skipped.
+	OutputBit( 1, kSimulationInterFrameIdleBits );
 }
 
 void FlexRaySimulationDataGenerator::OutputBit( U8 wire_bit, U32 bit_count )
