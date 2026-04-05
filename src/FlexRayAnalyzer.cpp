@@ -177,6 +177,21 @@ void FlexRayAnalyzer::WorkerThread()
 		return stream.str();
 	};
 
+	auto format_payload = [&]( const std::vector<U8>& payload ) {
+		if( payload.empty() == true )
+			return std::string( "-" );
+
+		std::ostringstream stream;
+		for( size_t i = 0; i < payload.size(); ++i )
+		{
+			if( i != 0 )
+				stream << ' ';
+			stream << format_hex_byte( payload[ i ] );
+		}
+
+		return stream.str();
+	};
+
 	auto add_segment = [&]( U64 start_sample, U64 end_sample, U8 frame_type, U8 frame_flags, const std::string& short_text,
 							const std::string& long_text, const char* frame_v2_type, bool* packet_has_segments = nullptr,
 							const std::function<void( FrameV2& )>& populate_frame_v2 = std::function<void( FrameV2& )>() ) {
@@ -340,6 +355,33 @@ void FlexRayAnalyzer::WorkerThread()
 		bool packet_has_segments = false;
 
 		auto commit_packet = [&]( U64 end_sample, U8 frame_flags, FlexRayFrameRecord record ) {
+			if( record.mIsError == false && record.mSymbolName.empty() == true )
+			{
+				FrameV2 frame_v2_packet;
+				frame_v2_packet.AddString( "frame_type", record.mIsDynamic ? "dynamic" : "static" );
+				frame_v2_packet.AddString( "identifier", format_hex( record.mFrameId, 3 ).c_str() );
+				frame_v2_packet.AddByte( "cycle", record.mCycle );
+				frame_v2_packet.AddByte( "payload_length_words", record.mPayloadLengthWords );
+				frame_v2_packet.AddByte( "payload_length_bytes", static_cast<U8>( record.mPayload.size() ) );
+				frame_v2_packet.AddBoolean( "reserved_bit", record.mReservedBit );
+				frame_v2_packet.AddBoolean( "payload_preamble", record.mPayloadPreamble );
+				frame_v2_packet.AddBoolean( "null_frame", record.mNullFrame );
+				frame_v2_packet.AddBoolean( "sync_frame", record.mSyncFrame );
+				frame_v2_packet.AddBoolean( "startup_frame", record.mStartupFrame );
+				frame_v2_packet.AddString( "header_crc", format_hex( record.mHeaderCrc, 3 ).c_str() );
+				frame_v2_packet.AddBoolean( "header_crc_ok", record.mHeaderCrcOk );
+				frame_v2_packet.AddString( "crc", format_hex( record.mFrameCrc, 6 ).c_str() );
+				frame_v2_packet.AddBoolean( "crc_ok", record.mFrameCrcOk );
+				frame_v2_packet.AddByte( "cid_bits", static_cast<U8>( record.mCidBits ) );
+				frame_v2_packet.AddBoolean( "cid_ok", record.mCidOk );
+
+				if( record.mIsDynamic == true )
+					frame_v2_packet.AddByte( "dts_bits", static_cast<U8>( record.mDtsBits ) );
+
+				frame_v2_packet.AddString( "payload", format_payload( record.mPayload ).c_str() );
+				mResults->AddFrameV2( frame_v2_packet, "frame", tss_start_sample, end_sample );
+			}
+
 			if( record.mIsError == true && packet_has_segments == false )
 				add_segment( tss_start_sample, end_sample, FlexRayErrorField, DISPLAY_AS_ERROR_FLAG, "Err", record.mErrorText, "error_field",
 							 &packet_has_segments, [&]( FrameV2& frame_v2 ) { frame_v2.AddString( "error", record.mErrorText.c_str() ); } );
