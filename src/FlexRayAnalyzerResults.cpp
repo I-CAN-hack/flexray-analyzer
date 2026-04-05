@@ -64,6 +64,9 @@ std::string GetFrameSummary( const FlexRayFrameRecord& record, DisplayBase displ
 	else
 		stream << " CRC OK";
 
+	if( record.mTssBelowTxSpec == true )
+		stream << " TSS WARN";
+
 	if( record.mCidOk == false )
 		stream << " CID WARN";
 
@@ -125,7 +128,7 @@ void FlexRayAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 	U64 trigger_sample = mAnalyzer->GetTriggerSample();
 	U32 sample_rate = mAnalyzer->GetSampleRate();
 
-	file_stream << "Time [s],Type,Segment,Frame ID,Cycle,Payload Bytes,PPI,NF,Sync,Startup,Header CRC,Header CRC OK,Frame CRC,Frame CRC OK,Payload,Info"
+	file_stream << "Time [s],Type,Segment,Frame ID,Cycle,TSS Bits,TSS TX Spec OK,Payload Bytes,PPI,NF,Sync,Startup,Header CRC,Header CRC OK,Frame CRC,Frame CRC OK,Payload,Info"
 				<< std::endl;
 
 	U64 num_packets = static_cast<U64>( mPacketRecords.size() );
@@ -138,12 +141,12 @@ void FlexRayAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 
 		if( record.mIsError == true )
 		{
-			file_stream << time_str << ",error,-,-,-,-,-,-,-,-,-,-,-,-,-,\"" << record.mErrorText << "\"" << std::endl;
+			file_stream << time_str << ",error,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,\"" << record.mErrorText << "\"" << std::endl;
 		}
 		else if( record.mSymbolName.empty() == false )
 		{
 			const std::string summary = GetFrameSummary( record, display_base );
-			file_stream << time_str << ",symbol," << record.mSymbolName << ",-,-,-,-,-,-,-,-,-,-,-,-,\"" << summary << "\"" << std::endl;
+			file_stream << time_str << ",symbol," << record.mSymbolName << ",-,-,-,-,-,-,-,-,-,-,-,-,-,-,\"" << summary << "\"" << std::endl;
 		}
 		else
 		{
@@ -152,6 +155,8 @@ void FlexRayAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 						<< "," << ( record.mIsDynamic ? "dynamic" : "static" )
 						<< "," << GetDisplayString( record.mFrameId, display_base, 11 )
 						<< "," << GetDisplayString( record.mCycle, display_base, 6 )
+						<< "," << record.mTssBits
+						<< "," << ( record.mTssBelowTxSpec ? "false" : "true" )
 						<< "," << record.mPayload.size()
 						<< "," << ( record.mPayloadPreamble ? 1 : 0 )
 						<< "," << ( record.mNullFrame ? 1 : 0 )

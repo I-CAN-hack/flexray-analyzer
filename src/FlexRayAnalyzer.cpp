@@ -13,8 +13,10 @@ namespace
 const U32 kHeaderByteCount = 5;
 const U32 kFrameCrcByteCount = 3;
 const U32 kChannelIdleDelimiterBits = 11;
-const U32 kTssRxLowMinBits = 3;
-const U32 kTssRxLowMaxBits = 15;
+const U32 kTssTxLowMinBits = 3;
+const U32 kTssTxLowMaxBits = 15;
+const U32 kTssRxLowMinBits = 2;
+const U32 kTssRxLowMaxBits = kTssTxLowMaxBits;
 const U32 kCasRxLowMinBits = 29;
 const U32 kCasRxLowMaxBits = 100;
 const U32 kHeaderCrcWidth = 11;
@@ -361,6 +363,8 @@ void FlexRayAnalyzer::WorkerThread()
 				frame_v2_packet.AddString( "frame_type", record.mIsDynamic ? "dynamic" : "static" );
 				frame_v2_packet.AddString( "identifier", format_hex( record.mFrameId, 3 ).c_str() );
 				frame_v2_packet.AddByte( "cycle", record.mCycle );
+				frame_v2_packet.AddByte( "tss_bits", static_cast<U8>( record.mTssBits ) );
+				frame_v2_packet.AddBoolean( "tss_tx_spec_ok", record.mTssBelowTxSpec == false );
 				frame_v2_packet.AddByte( "payload_length_words", record.mPayloadLengthWords );
 				frame_v2_packet.AddByte( "payload_length_bytes", static_cast<U8>( record.mPayload.size() ) );
 				frame_v2_packet.AddBoolean( "reserved_bit", record.mReservedBit );
@@ -476,6 +480,7 @@ void FlexRayAnalyzer::WorkerThread()
 
 		FlexRayFrameRecord record;
 		record.mTssBits = observed_tss_bits;
+		record.mTssBelowTxSpec = observed_tss_bits < kTssTxLowMinBits;
 		U64 packet_end_sample = tss_end_sample;
 
 		U8 fss_bit = 0;
@@ -517,9 +522,19 @@ void FlexRayAnalyzer::WorkerThread()
 		}
 		++bit_index;
 
-		add_segment( tss_start_sample, tss_end_sample > 0 ? ( tss_end_sample - 1 ) : tss_end_sample, FlexRayTssField, 0,
-					 "TSS", "Transmission start sequence", "tss_field", &packet_has_segments,
-					 [&]( FrameV2& frame_v2 ) { frame_v2.AddByte( "low_bits", static_cast<U8>( observed_tss_bits ) ); } );
+		{
+			std::ostringstream tss_text;
+			tss_text << "Transmission start sequence (" << observed_tss_bits << " bits";
+			if( record.mTssBelowTxSpec == true )
+				tss_text << ", accepted on RX, below transmitter spec 3-15 bits";
+			tss_text << ")";
+			add_segment( tss_start_sample, tss_end_sample > 0 ? ( tss_end_sample - 1 ) : tss_end_sample, FlexRayTssField,
+						 record.mTssBelowTxSpec ? DISPLAY_AS_WARNING_FLAG : 0, "TSS", tss_text.str(), "tss_field", &packet_has_segments,
+						 [&]( FrameV2& frame_v2 ) {
+							 frame_v2.AddByte( "low_bits", static_cast<U8>( observed_tss_bits ) );
+							 frame_v2.AddBoolean( "tx_spec_ok", record.mTssBelowTxSpec == false );
+						 } );
+		}
 		add_segment( segment_start( fss_sample ), segment_end( fss_sample ), FlexRayFssField, 0, "FSS", "Frame start sequence", "fss_field",
 					 &packet_has_segments );
 
@@ -822,6 +837,9 @@ void FlexRayAnalyzer::WorkerThread()
 		U8 frame_flags = 0;
 
 		if( record.mReservedBit == true )
+			frame_flags |= DISPLAY_AS_WARNING_FLAG;
+
+		if( record.mTssBelowTxSpec == true )
 			frame_flags |= DISPLAY_AS_WARNING_FLAG;
 
 		if( record.mCidOk == false )

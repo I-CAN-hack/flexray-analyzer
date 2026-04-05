@@ -27,6 +27,7 @@ struct FlexRayFrameRecord
 {
 	bool mIsError = false;
 	bool mIsDynamic = false;
+	bool mTssBelowTxSpec = false;
 	bool mReservedBit = false;
 	bool mPayloadPreamble = false;
 	bool mNullFrame = false;
