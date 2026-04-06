@@ -8,6 +8,8 @@
 #include <sstream>
 #include <vector>
 
+#include "FlexRayCommon.h"
+
 namespace
 {
 const U32 kHeaderByteCount = 5;
@@ -21,11 +23,6 @@ const U32 kCasRxLowMinBits = 29;
 const U32 kCasRxLowMaxBits = 100;
 const U32 kHeaderCrcWidth = 11;
 const U32 kFrameCrcWidth = 24;
-const U32 kHeaderCrcPolynomial = 0x385;
-const U32 kHeaderCrcInit = 0x01A;
-const U32 kFrameCrcPolynomial = 0x5D6DCB;
-const U32 kFrameCrcInitA = 0xFEDCBA;
-const U32 kFrameCrcInitB = 0xABCDEF;
 
 struct ClockRecoveryState
 {
@@ -59,7 +56,7 @@ U8 GetWireBit( BitState state, bool invert_input )
 {
 	U8 bit = state == BIT_HIGH ? 1 : 0;
 
-	if( invert_input == true )
+	if( invert_input )
 		bit ^= 1;
 
 	return bit;
@@ -67,13 +64,7 @@ U8 GetWireBit( BitState state, bool invert_input )
 
 U32 RoundBitsFromSamples( U64 sample_count, double bit_width )
 {
-	return static_cast<U32>( std::floor( ( static_cast<double>( sample_count ) / bit_width ) + 0.5 ) );
-}
-
-void AppendByteBits( std::vector<U8>& bits, U8 value )
-{
-	for( int shift = 7; shift >= 0; --shift )
-		bits.push_back( ( value >> shift ) & 0x1 );
+	return static_cast<U32>( std::lround( static_cast<double>( sample_count ) / bit_width ) );
 }
 
 U32 BitsToNumber( const std::vector<U8>& bits, size_t offset, size_t count )
@@ -84,24 +75,6 @@ U32 BitsToNumber( const std::vector<U8>& bits, size_t offset, size_t count )
 		value = ( value << 1 ) | bits.at( offset + index );
 
 	return value;
-}
-
-U32 CalculateCrc( const std::vector<U8>& bits, U32 polynomial, U32 width, U32 init )
-{
-	const U32 msb_mask = 1U << ( width - 1 );
-	const U32 value_mask = ( 1U << width ) - 1U;
-	U32 register_value = init & value_mask;
-
-	for( U8 bit : bits )
-	{
-		const bool apply_polynomial = ( ( register_value & msb_mask ) != 0 ) ^ ( bit != 0 );
-		register_value = ( register_value << 1 ) & value_mask;
-
-		if( apply_polynomial == true )
-			register_value ^= polynomial;
-	}
-
-	return register_value & value_mask;
 }
 
 WakeupTiming GetWakeupTiming( U32 bit_rate )
@@ -168,8 +141,8 @@ void FlexRayAnalyzer::WorkerThread()
 	const double minimum_idle_high_samples = bit_width * static_cast<double>( kChannelIdleDelimiterBits );
 	const WakeupTiming wakeup_timing = GetWakeupTiming( mSettings.mBitRate );
 	const double maximum_wakeup_window_samples = bit_width * static_cast<double>( wakeup_timing.mRxWindowBits );
-	const U64 start_padding_samples = static_cast<U64>( std::max( 0.0, std::floor( sample_offset + 0.5 ) ) );
-	const U64 end_padding_samples = static_cast<U64>( std::max( 1.0, std::floor( ( bit_width - sample_offset ) + 0.5 ) ) );
+	const U64 start_padding_samples = static_cast<U64>( std::max( 0L, std::lround( sample_offset ) ) );
+	const U64 end_padding_samples = static_cast<U64>( std::max( 1L, std::lround( bit_width - sample_offset ) ) );
 
 	auto segment_start = [&]( U64 sample_number ) -> U64 {
 		return sample_number > start_padding_samples ? sample_number - start_padding_samples : 0;
@@ -179,35 +152,16 @@ void FlexRayAnalyzer::WorkerThread()
 		return sample_number + end_padding_samples;
 	};
 
-	auto format_hex_byte = []( U8 value ) {
+	auto format_hex = []( U32 value, U32 width, bool prefix = true ) {
 		std::ostringstream stream;
-		stream << std::hex << std::uppercase << std::setfill( '0' ) << std::setw( 2 ) << static_cast<U32>( value );
-		return stream.str();
-	};
-
-	auto format_hex = []( U32 value, U32 width ) {
-		std::ostringstream stream;
-		stream << "0x" << std::hex << std::uppercase << std::setfill( '0' ) << std::setw( static_cast<int>( width ) ) << value;
-		return stream.str();
-	};
-
-	auto format_payload = [&]( const std::vector<U8>& payload ) {
-		if( payload.empty() == true )
-			return std::string( "-" );
-
-		std::ostringstream stream;
-		for( size_t i = 0; i < payload.size(); ++i )
-		{
-			if( i != 0 )
-				stream << ' ';
-			stream << format_hex_byte( payload[ i ] );
-		}
-
+		if( prefix )
+			stream << "0x";
+		stream << std::hex << std::uppercase << std::setfill( '0' ) << std::setw( static_cast<int>( width ) ) << value;
 		return stream.str();
 	};
 
 	auto add_segment = [&]( U64 start_sample, U64 end_sample, U8 frame_type, U8 frame_flags, const std::string& short_text,
-							const std::string& long_text, const char* frame_v2_type, bool* packet_has_segments = nullptr,
+							const std::string& long_text, const char* frame_v2_type = nullptr, bool* packet_has_segments_ptr = nullptr,
 							const std::function<void( FrameV2& )>& populate_frame_v2 = std::function<void( FrameV2& )>() ) {
 		Frame frame;
 		frame.mStartingSampleInclusive = start_sample;
@@ -217,37 +171,21 @@ void FlexRayAnalyzer::WorkerThread()
 		frame.mType = frame_type;
 		frame.mFlags = frame_flags;
 
-		FlexRaySegmentRecord record;
-		record.mShortText = short_text;
-		record.mLongText = long_text.empty() ? short_text : long_text;
-		mResults->AddFlexRaySegment( frame, std::move( record ) );
+		FlexRaySegmentRecord segment_record;
+		segment_record.mShortText = short_text;
+		segment_record.mLongText = long_text.empty() ? short_text : long_text;
+		mResults->AddFlexRaySegment( frame, std::move( segment_record ) );
 
-		FrameV2 frame_v2;
-		if( populate_frame_v2 )
-			populate_frame_v2( frame_v2 );
-		mResults->AddFrameV2( frame_v2, frame_v2_type, frame.mStartingSampleInclusive, frame.mEndingSampleInclusive );
+		if( frame_v2_type != nullptr )
+		{
+			FrameV2 frame_v2;
+			if( populate_frame_v2 )
+				populate_frame_v2( frame_v2 );
+			mResults->AddFrameV2( frame_v2, frame_v2_type, frame.mStartingSampleInclusive, frame.mEndingSampleInclusive );
+		}
 
-		if( packet_has_segments != nullptr )
-			*packet_has_segments = true;
-	};
-
-	auto add_visual_segment = [&]( U64 start_sample, U64 end_sample, U8 frame_type, U8 frame_flags, const std::string& short_text,
-								   const std::string& long_text, bool* packet_has_segments = nullptr ) {
-		Frame frame;
-		frame.mStartingSampleInclusive = start_sample;
-		frame.mEndingSampleInclusive = std::max( start_sample, end_sample );
-		frame.mData1 = 0;
-		frame.mData2 = 0;
-		frame.mType = frame_type;
-		frame.mFlags = frame_flags;
-
-		FlexRaySegmentRecord record;
-		record.mShortText = short_text;
-		record.mLongText = long_text.empty() ? short_text : long_text;
-		mResults->AddFlexRaySegment( frame, std::move( record ) );
-
-		if( packet_has_segments != nullptr )
-			*packet_has_segments = true;
+		if( packet_has_segments_ptr != nullptr )
+			*packet_has_segments_ptr = true;
 	};
 
 	auto add_frame_v2_only = [&]( U64 start_sample, U64 end_sample, const char* frame_v2_type,
@@ -279,7 +217,7 @@ void FlexRayAnalyzer::WorkerThread()
 	U32 pending_wakeup_symbol_count = 0;
 
 	auto flush_pending_wakeup_pattern = [&]() {
-		if( have_pending_wakeup_pattern == false )
+		if( !have_pending_wakeup_pattern )
 			return;
 
 		FlexRayFrameRecord record;
@@ -300,7 +238,7 @@ void FlexRayAnalyzer::WorkerThread()
 		U64 tss_start_sample = 0;
 		bool bypass_idle_check = false;
 
-		if( have_pending_tss == true )
+		if( have_pending_tss )
 		{
 			have_pending_tss = false;
 			bypass_idle_check = true;
@@ -322,11 +260,11 @@ void FlexRayAnalyzer::WorkerThread()
 		if( GetWireBit( mInput->GetBitState(), mSettings.mInvertInput ) != 0 )
 			continue;
 
-		if( have_pending_wakeup_pattern == true &&
+		if( have_pending_wakeup_pattern &&
 			static_cast<double>( tss_start_sample - pending_wakeup_last_low_start_sample ) + ( bit_width * 0.25 ) > maximum_wakeup_window_samples )
 			flush_pending_wakeup_pattern();
 
-		if( bypass_idle_check == false &&
+		if( !bypass_idle_check &&
 			static_cast<double>( tss_start_sample - preceding_high_start_sample ) + ( bit_width * 0.25 ) < minimum_idle_high_samples )
 			continue;
 
@@ -353,7 +291,7 @@ void FlexRayAnalyzer::WorkerThread()
 							 frame_v2.AddByte( "idle_bits", static_cast<U8>( observed_post_low_high_bits ) );
 						 } );
 
-			if( have_pending_wakeup_pattern == true &&
+			if( have_pending_wakeup_pattern &&
 				static_cast<double>( tss_start_sample - pending_wakeup_last_low_start_sample ) + ( bit_width * 0.25 ) <= maximum_wakeup_window_samples )
 			{
 				++pending_wakeup_symbol_count;
@@ -373,7 +311,7 @@ void FlexRayAnalyzer::WorkerThread()
 			continue;
 		}
 
-		if( have_pending_wakeup_pattern == true )
+		if( have_pending_wakeup_pattern )
 			flush_pending_wakeup_pattern();
 
 		if( high_after_tss_samples < ( bit_width * 1.25 ) || high_after_tss_samples > ( bit_width * 2.75 ) )
@@ -382,7 +320,7 @@ void FlexRayAnalyzer::WorkerThread()
 		const bool is_valid_tss = observed_tss_bits >= kTssRxLowMinBits && observed_tss_bits <= kTssRxLowMaxBits;
 		const bool is_valid_cas = observed_tss_bits >= kCasRxLowMinBits && observed_tss_bits <= kCasRxLowMaxBits;
 
-		if( is_valid_tss == false && is_valid_cas == false )
+		if( !is_valid_tss && !is_valid_cas )
 			continue;
 
 		ClockRecoveryState recovery;
@@ -397,14 +335,14 @@ void FlexRayAnalyzer::WorkerThread()
 		std::vector<FlexRayMarker> packet_markers;
 
 		auto commit_packet = [&]( U64 end_sample, U8 frame_flags, FlexRayFrameRecord record ) {
-			if( record.mIsError == false && record.mSymbolName.empty() == true )
+			if( !record.mIsError && record.mSymbolName.empty() )
 			{
 				FrameV2 frame_v2_packet;
 				frame_v2_packet.AddString( "frame_type", record.mIsDynamic ? "dynamic" : "static" );
 				frame_v2_packet.AddString( "identifier", format_hex( record.mFrameId, 3 ).c_str() );
 				frame_v2_packet.AddByte( "cycle", record.mCycle );
 				frame_v2_packet.AddByte( "tss_bits", static_cast<U8>( record.mTssBits ) );
-				frame_v2_packet.AddBoolean( "tss_tx_spec_ok", record.mTssBelowTxSpec == false );
+				frame_v2_packet.AddBoolean( "tss_tx_spec_ok", !record.mTssBelowTxSpec );
 				frame_v2_packet.AddByte( "payload_length_words", record.mPayloadLengthWords );
 				frame_v2_packet.AddByte( "payload_length_bytes", static_cast<U8>( record.mPayload.size() ) );
 				frame_v2_packet.AddBoolean( "reserved_bit", record.mReservedBit );
@@ -419,10 +357,10 @@ void FlexRayAnalyzer::WorkerThread()
 				frame_v2_packet.AddByte( "cid_bits", static_cast<U8>( record.mCidBits ) );
 				frame_v2_packet.AddBoolean( "cid_ok", record.mCidOk );
 
-				if( record.mIsDynamic == true )
+				if( record.mIsDynamic )
 					frame_v2_packet.AddByte( "dts_bits", static_cast<U8>( record.mDtsBits ) );
 
-				frame_v2_packet.AddString( "payload", format_payload( record.mPayload ).c_str() );
+				frame_v2_packet.AddString( "payload", FormatPayload( record.mPayload ).c_str() );
 				mResults->AddFrameV2( frame_v2_packet, "frame", tss_start_sample, end_sample );
 			}
 
@@ -433,7 +371,7 @@ void FlexRayAnalyzer::WorkerThread()
 									 mSettings.mInputChannel );
 			}
 
-			if( record.mIsError == true && packet_has_segments == false )
+			if( record.mIsError && !packet_has_segments )
 				add_segment( tss_start_sample, end_sample, FlexRayErrorField, DISPLAY_AS_ERROR_FLAG, "Err", record.mErrorText, "error_field",
 							 &packet_has_segments, [&]( FrameV2& frame_v2 ) { frame_v2.AddString( "error", record.mErrorText.c_str() ); } );
 
@@ -452,7 +390,7 @@ void FlexRayAnalyzer::WorkerThread()
 
 				const U64 target_sample = static_cast<U64>( std::floor( sample_target + 0.5 ) );
 
-				if( mInput->WouldAdvancingToAbsPositionCauseTransition( target_sample ) == true )
+				if( mInput->WouldAdvancingToAbsPositionCauseTransition( target_sample ) )
 				{
 					mInput->AdvanceToNextEdge();
 
@@ -508,13 +446,13 @@ void FlexRayAnalyzer::WorkerThread()
 									  std::vector<U64>* data_bit_samples = nullptr ) -> bool {
 			U64 sample_number = 0;
 
-			if( read_expected_bit( 1, "BSS high", error_text, &sample_number ) == false )
+			if( !read_expected_bit( 1, "BSS high", error_text, &sample_number ) )
 				return false;
 
 			if( byte_start_sample != nullptr )
 				*byte_start_sample = sample_number;
 
-			if( read_expected_bit( 0, "BSS low", error_text ) == false )
+			if( !read_expected_bit( 0, "BSS low", error_text ) )
 				return false;
 
 			value = 0;
@@ -522,18 +460,18 @@ void FlexRayAnalyzer::WorkerThread()
 			for( U32 shift = 0; shift < 8; ++shift )
 			{
 				U8 sampled_bit = 0;
-				U64 sample_number = 0;
-				read_bit( bit_index, sampled_bit, sample_number );
-				last_sample = sample_number;
-				add_bit_marker( sample_number, FlexRayMarkerType::DataBit );
+				U64 bit_sample = 0;
+				read_bit( bit_index, sampled_bit, bit_sample );
+				last_sample = bit_sample;
+				add_bit_marker( bit_sample, FlexRayMarkerType::DataBit );
 				value = static_cast<U8>( ( value << 1 ) | sampled_bit );
 				++bit_index;
 
 				if( data_bit_samples != nullptr )
-					data_bit_samples->push_back( sample_number );
+					data_bit_samples->push_back( bit_sample );
 
 				if( byte_end_sample != nullptr )
-					*byte_end_sample = sample_number;
+					*byte_end_sample = bit_sample;
 			}
 
 			return true;
@@ -596,14 +534,14 @@ void FlexRayAnalyzer::WorkerThread()
 		{
 			std::ostringstream tss_text;
 			tss_text << "Transmission start sequence (" << observed_tss_bits << " bits";
-			if( record.mTssBelowTxSpec == true )
+			if( record.mTssBelowTxSpec )
 				tss_text << ", accepted on RX, below transmitter spec 3-15 bits";
 			tss_text << ")";
 			add_segment( tss_start_sample, fss_segment_start_sample, FlexRayTssField,
 						 record.mTssBelowTxSpec ? DISPLAY_AS_WARNING_FLAG : 0, "TSS", tss_text.str(), "tss_field", &packet_has_segments,
 						 [&]( FrameV2& frame_v2 ) {
 							 frame_v2.AddByte( "low_bits", static_cast<U8>( observed_tss_bits ) );
-							 frame_v2.AddBoolean( "tx_spec_ok", record.mTssBelowTxSpec == false );
+							 frame_v2.AddBoolean( "tx_spec_ok", !record.mTssBelowTxSpec );
 						 } );
 		}
 		add_segment( fss_segment_start_sample, segment_end( fss_sample ), FlexRayFssField, 0, "FSS", "Frame start sequence", "fss_field",
@@ -630,7 +568,7 @@ void FlexRayAnalyzer::WorkerThread()
 			U64 byte_start_sample = 0;
 			U64 byte_end_sample = 0;
 
-			if( read_extended_byte( header_byte, syntax_error, &byte_start_sample, &byte_end_sample, &header_bit_samples ) == false )
+			if( !read_extended_byte( header_byte, syntax_error, &byte_start_sample, &byte_end_sample, &header_bit_samples ) )
 				break;
 
 			header_bytes.push_back( header_byte );
@@ -638,7 +576,7 @@ void FlexRayAnalyzer::WorkerThread()
 			header_end_sample = byte_end_sample;
 		}
 
-		if( syntax_error.empty() == false )
+		if( !syntax_error.empty() )
 			continue;
 
 		std::vector<U8> header_bits;
@@ -694,9 +632,9 @@ void FlexRayAnalyzer::WorkerThread()
 				};
 
 				auto add_header_subfield = [&]( U32 bit_offset, U32 bit_count, const std::string& short_text, const std::string& long_text ) {
-					add_visual_segment( header_subfield_start_sample( bit_offset ),
-										segment_end( header_bit_samples.at( bit_offset + bit_count - 1 ) ), FlexRayHeaderField, 0,
-										short_text, long_text, &packet_has_segments );
+					add_segment( header_subfield_start_sample( bit_offset ),
+								 segment_end( header_bit_samples.at( bit_offset + bit_count - 1 ) ), FlexRayHeaderField, 0,
+								 short_text, long_text, nullptr, &packet_has_segments );
 				};
 
 				add_header_subfield( 0, 5, "Flg", "Header flags" );
@@ -719,38 +657,39 @@ void FlexRayAnalyzer::WorkerThread()
 			}
 			else
 			{
-				add_visual_segment( segment_start( header_start_sample ), segment_end( header_end_sample ), FlexRayHeaderField, 0, "Hdr",
-									header_text.str(), &packet_has_segments );
+				add_segment( segment_start( header_start_sample ), segment_end( header_end_sample ), FlexRayHeaderField, 0, "Hdr",
+							 header_text.str(), nullptr, &packet_has_segments );
 			}
 		}
 
 		std::vector<U8> payload_bits;
-		record.mPayload.reserve( static_cast<size_t>( record.mPayloadLengthWords ) * 2 );
-		payload_bits.reserve( record.mPayload.size() * 8 );
+		const U32 payload_byte_count = static_cast<U32>( record.mPayloadLengthWords ) * 2;
+		record.mPayload.reserve( payload_byte_count );
+		payload_bits.reserve( payload_byte_count * 8 );
 
-		for( U32 payload_index = 0; payload_index < static_cast<U32>( record.mPayloadLengthWords ) * 2; ++payload_index )
+		for( U32 payload_index = 0; payload_index < payload_byte_count; ++payload_index )
 		{
 			U8 payload_byte = 0;
 			U64 payload_start_sample = 0;
 			U64 payload_end_sample = 0;
 
-			if( read_extended_byte( payload_byte, syntax_error, &payload_start_sample, &payload_end_sample ) == false )
+			if( !read_extended_byte( payload_byte, syntax_error, &payload_start_sample, &payload_end_sample ) )
 				break;
 
 			record.mPayload.push_back( payload_byte );
 			AppendByteBits( payload_bits, payload_byte );
 
 			std::ostringstream payload_text;
-			payload_text << "Payload[" << payload_index << "] 0x" << format_hex_byte( payload_byte );
+			payload_text << "Payload[" << payload_index << "] " << format_hex( payload_byte, 2 );
 			add_segment( segment_start( payload_start_sample ), segment_end( payload_end_sample ), FlexRayPayloadByteField, 0,
-						 format_hex_byte( payload_byte ), payload_text.str(), "payload_byte", &packet_has_segments,
+						 format_hex( payload_byte, 2, false ), payload_text.str(), "payload_byte", &packet_has_segments,
 						 [&]( FrameV2& frame_v2 ) {
 							 frame_v2.AddByte( "index", static_cast<U8>( payload_index ) );
 							 frame_v2.AddByte( "data", payload_byte );
 						 } );
 		}
 
-		if( syntax_error.empty() == false )
+		if( !syntax_error.empty() )
 		{
 			record.mIsError = true;
 			record.mErrorText = syntax_error;
@@ -769,7 +708,7 @@ void FlexRayAnalyzer::WorkerThread()
 			U64 byte_start_sample = 0;
 			U64 byte_end_sample = 0;
 
-			if( read_extended_byte( frame_crc_byte, syntax_error, &byte_start_sample, &byte_end_sample ) == false )
+			if( !read_extended_byte( frame_crc_byte, syntax_error, &byte_start_sample, &byte_end_sample ) )
 				break;
 
 			frame_crc_bytes.push_back( frame_crc_byte );
@@ -779,7 +718,7 @@ void FlexRayAnalyzer::WorkerThread()
 			frame_crc_end_sample = byte_end_sample;
 		}
 
-		if( syntax_error.empty() == false )
+		if( !syntax_error.empty() )
 		{
 			record.mIsError = true;
 			record.mErrorText = syntax_error;
@@ -810,8 +749,8 @@ void FlexRayAnalyzer::WorkerThread()
 
 		U64 fes_low_sample = 0;
 		U64 fes_high_sample = 0;
-		if( read_expected_bit( 0, "FES low", syntax_error, &fes_low_sample ) == false ||
-			read_expected_bit( 1, "FES high", syntax_error, &fes_high_sample ) == false )
+		if( !read_expected_bit( 0, "FES low", syntax_error, &fes_low_sample ) ||
+			!read_expected_bit( 1, "FES high", syntax_error, &fes_high_sample ) )
 		{
 			record.mIsError = true;
 			record.mErrorText = syntax_error.empty() ? "Invalid frame end sequence." : syntax_error;
@@ -822,6 +761,51 @@ void FlexRayAnalyzer::WorkerThread()
 		add_segment( segment_start( fes_low_sample ), segment_end( fes_high_sample ), FlexRayFesField, 0, "FES",
 					 "Frame end sequence", "fes_field", &packet_has_segments );
 		packet_end_sample = segment_end( fes_high_sample );
+
+		auto read_cid = [&]( U64 initial_start_sample, U32 initial_bits ) {
+			record.mCidBits = initial_bits;
+			U64 cid_start_sample = initial_start_sample;
+			U64 cid_end_sample = initial_start_sample;
+
+			for( U32 cid_bit = initial_bits; cid_bit < kChannelIdleDelimiterBits; ++cid_bit )
+			{
+				U8 cid_value = 0;
+				U64 sample_number = 0;
+				read_bit( bit_index, cid_value, sample_number );
+				last_sample = sample_number;
+				add_bit_marker( sample_number, FlexRayMarkerType::SyntaxBit );
+
+				if( cid_value != 1 )
+				{
+					record.mCidOk = false;
+					have_pending_tss = true;
+					pending_tss_start_sample = recovery.mAnchorSample;
+					break;
+				}
+
+				if( record.mCidBits == 0 )
+					cid_start_sample = sample_number;
+				cid_end_sample = sample_number;
+				++record.mCidBits;
+				++bit_index;
+			}
+
+			if( record.mCidBits > 0 )
+			{
+				std::ostringstream cid_text;
+				cid_text << "Channel idle delimiter (" << record.mCidBits << " bits";
+				if( !record.mCidOk )
+					cid_text << ", truncated";
+				cid_text << ")";
+				add_segment( segment_start( cid_start_sample ), segment_end( cid_end_sample ), FlexRayCidField,
+							 record.mCidOk ? 0 : DISPLAY_AS_WARNING_FLAG, "CID", cid_text.str(), "cid_field", &packet_has_segments,
+							 [&]( FrameV2& frame_v2 ) {
+								 frame_v2.AddByte( "cid_bits", static_cast<U8>( record.mCidBits ) );
+								 frame_v2.AddBoolean( "cid_ok", record.mCidOk );
+							 } );
+				packet_end_sample = segment_end( cid_end_sample );
+			}
+		};
 
 		U8 post_fes_bit = 0;
 		U64 post_fes_sample = 0;
@@ -866,105 +850,30 @@ void FlexRayAnalyzer::WorkerThread()
 				packet_end_sample = segment_end( dts_end_sample );
 			}
 
-			U64 cid_start_sample = 0;
-			U64 cid_end_sample = 0;
-			for( U32 cid_bit = 0; cid_bit < kChannelIdleDelimiterBits; ++cid_bit )
-			{
-				U8 cid_value = 0;
-				U64 sample_number = 0;
-				read_bit( bit_index, cid_value, sample_number );
-				last_sample = sample_number;
-				add_bit_marker( sample_number, FlexRayMarkerType::SyntaxBit );
-
-				if( cid_value != 1 )
-				{
-					record.mCidOk = false;
-					have_pending_tss = true;
-					pending_tss_start_sample = recovery.mAnchorSample;
-					break;
-				}
-
-				if( record.mCidBits == 0 )
-					cid_start_sample = sample_number;
-				cid_end_sample = sample_number;
-				++record.mCidBits;
-				++bit_index;
-			}
-
-			if( record.mCidBits != 0 )
-			{
-				std::ostringstream cid_text;
-				cid_text << "Channel idle delimiter (" << record.mCidBits << " bits";
-				if( record.mCidOk == false )
-					cid_text << ", truncated";
-				cid_text << ")";
-				add_segment( segment_start( cid_start_sample ), segment_end( cid_end_sample ), FlexRayCidField,
-							 record.mCidOk ? 0 : DISPLAY_AS_WARNING_FLAG, "CID", cid_text.str(), "cid_field", &packet_has_segments,
-							 [&]( FrameV2& frame_v2 ) {
-								 frame_v2.AddByte( "cid_bits", static_cast<U8>( record.mCidBits ) );
-								 frame_v2.AddBoolean( "cid_ok", record.mCidOk );
-							 } );
-				packet_end_sample = segment_end( cid_end_sample );
-			}
+			read_cid( 0, 0 );
 		}
 		else
 		{
 			record.mIsDynamic = false;
 			++bit_index;
-			record.mCidBits = 1;
-			U64 cid_start_sample = post_fes_sample;
-			U64 cid_end_sample = post_fes_sample;
-
-			for( U32 cid_bit = 1; cid_bit < kChannelIdleDelimiterBits; ++cid_bit )
-			{
-				U8 cid_value = 0;
-				U64 sample_number = 0;
-				read_bit( bit_index, cid_value, sample_number );
-				last_sample = sample_number;
-				add_bit_marker( sample_number, FlexRayMarkerType::SyntaxBit );
-
-				if( cid_value != 1 )
-				{
-					record.mCidOk = false;
-					have_pending_tss = true;
-					pending_tss_start_sample = recovery.mAnchorSample;
-					break;
-				}
-
-				cid_end_sample = sample_number;
-				++record.mCidBits;
-				++bit_index;
-			}
-
-			std::ostringstream cid_text;
-			cid_text << "Channel idle delimiter (" << record.mCidBits << " bits";
-			if( record.mCidOk == false )
-				cid_text << ", truncated";
-			cid_text << ")";
-			add_segment( segment_start( cid_start_sample ), segment_end( cid_end_sample ), FlexRayCidField,
-						 record.mCidOk ? 0 : DISPLAY_AS_WARNING_FLAG, "CID", cid_text.str(), "cid_field", &packet_has_segments,
-						 [&]( FrameV2& frame_v2 ) {
-							 frame_v2.AddByte( "cid_bits", static_cast<U8>( record.mCidBits ) );
-							 frame_v2.AddBoolean( "cid_ok", record.mCidOk );
-						 } );
-			packet_end_sample = segment_end( cid_end_sample );
+			read_cid( post_fes_sample, 1 );
 		}
 
 		U8 frame_flags = 0;
 
-		if( record.mReservedBit == true )
+		if( record.mReservedBit )
 			frame_flags |= DISPLAY_AS_WARNING_FLAG;
 
-		if( record.mTssBelowTxSpec == true )
+		if( record.mTssBelowTxSpec )
 			frame_flags |= DISPLAY_AS_WARNING_FLAG;
 
-		if( record.mCidOk == false )
+		if( !record.mCidOk )
 			frame_flags |= DISPLAY_AS_WARNING_FLAG;
 
-		if( record.mFrameId == 0 || record.mStartupFrame == true && record.mSyncFrame == false )
+		if( record.mFrameId == 0 || ( record.mStartupFrame && !record.mSyncFrame ) )
 			frame_flags |= DISPLAY_AS_ERROR_FLAG;
 
-		if( record.mHeaderCrcOk == false || record.mFrameCrcOk == false )
+		if( !record.mHeaderCrcOk || !record.mFrameCrcOk )
 			frame_flags |= DISPLAY_AS_ERROR_FLAG;
 
 		commit_packet( packet_end_sample, frame_flags, std::move( record ) );
@@ -978,7 +887,7 @@ bool FlexRayAnalyzer::NeedsRerun()
 
 U32 FlexRayAnalyzer::GenerateSimulationData( U64 minimum_sample_index, U32 device_sample_rate, SimulationChannelDescriptor** simulation_channels )
 {
-	if( mSimulationInitialized == false )
+	if( !mSimulationInitialized )
 	{
 		mSimulationDataGenerator.Initialize( GetSimulationSampleRate(), &mSettings );
 		mSimulationInitialized = true;

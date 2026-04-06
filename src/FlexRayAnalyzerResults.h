@@ -64,7 +64,7 @@ class FlexRayAnalyzerResults : public AnalyzerResults
 {
 public:
 	FlexRayAnalyzerResults( FlexRayAnalyzer* analyzer, FlexRayAnalyzerSettings* settings );
-	virtual ~FlexRayAnalyzerResults();
+	virtual ~FlexRayAnalyzerResults() = default;
 
 	virtual void GenerateBubbleText( U64 frame_index, Channel& channel, DisplayBase display_base );
 	virtual void GenerateExportFile( const char* file, DisplayBase display_base, U32 export_type_user_id );

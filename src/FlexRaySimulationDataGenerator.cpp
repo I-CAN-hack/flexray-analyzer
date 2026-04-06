@@ -1,29 +1,14 @@
 #include "FlexRaySimulationDataGenerator.h"
 
 #include "FlexRayAnalyzerSettings.h"
+#include "FlexRayCommon.h"
 #include <AnalyzerHelpers.h>
 
 namespace
 {
-const U32 kHeaderCrcPolynomial = 0x385;
-const U32 kHeaderCrcInit = 0x01A;
-const U32 kFrameCrcPolynomial = 0x5D6DCB;
-const U32 kFrameCrcInitA = 0xFEDCBA;
-const U32 kFrameCrcInitB = 0xABCDEF;
 const U32 kSimulationInitialIdleBits = 16;
 const U32 kSimulationInterFrameIdleBits = 11;
 const U32 kSimulationTssBits = 5;
-
-void AppendBits( std::vector<U8>& bits, U32 value, U32 bit_count )
-{
-	for( int shift = static_cast<int>( bit_count ) - 1; shift >= 0; --shift )
-		bits.push_back( ( value >> shift ) & 0x1 );
-}
-
-void AppendByteBits( std::vector<U8>& bits, U8 value )
-{
-	AppendBits( bits, value, 8 );
-}
 
 std::vector<U8> BitsToBytes( const std::vector<U8>& bits )
 {
@@ -48,10 +33,6 @@ FlexRaySimulationDataGenerator::FlexRaySimulationDataGenerator()
 	mSimulationSampleRateHz( 0 ),
 	mSamplesPerBit( 0 ),
 	mFrameCounter( 0 )
-{
-}
-
-FlexRaySimulationDataGenerator::~FlexRaySimulationDataGenerator()
 {
 }
 
@@ -145,7 +126,7 @@ void FlexRaySimulationDataGenerator::OutputFrame( U16 frame_id, U8 cycle, const 
 	OutputBit( 0, 1 ); // FES low
 	OutputBit( 1, 1 ); // FES high
 
-	if( dynamic_frame == true )
+	if( dynamic_frame )
 	{
 		OutputBit( 0, 3 ); // DTS low
 		OutputBit( 1, 1 ); // DTS high
@@ -173,22 +154,4 @@ void FlexRaySimulationDataGenerator::OutputExtendedByte( U8 value )
 
 	for( int shift = 7; shift >= 0; --shift )
 		OutputBit( static_cast<U8>( ( value >> shift ) & 0x1 ), 1 );
-}
-
-U32 FlexRaySimulationDataGenerator::CalculateCrc( const std::vector<U8>& bits, U32 polynomial, U32 width, U32 init ) const
-{
-	const U32 msb_mask = 1U << ( width - 1 );
-	const U32 value_mask = ( 1U << width ) - 1U;
-	U32 register_value = init & value_mask;
-
-	for( U8 bit : bits )
-	{
-		const bool apply_polynomial = ( ( register_value & msb_mask ) != 0 ) ^ ( bit != 0 );
-		register_value = ( register_value << 1 ) & value_mask;
-
-		if( apply_polynomial == true )
-			register_value ^= polynomial;
-	}
-
-	return register_value & value_mask;
 }

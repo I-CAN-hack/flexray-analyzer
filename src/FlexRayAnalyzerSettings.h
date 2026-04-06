@@ -8,7 +8,7 @@ class FlexRayAnalyzerSettings : public AnalyzerSettings
 {
 public:
 	FlexRayAnalyzerSettings();
-	virtual ~FlexRayAnalyzerSettings();
+	virtual ~FlexRayAnalyzerSettings() = default;
 
 	virtual bool SetSettingsFromInterfaces();
 	void UpdateInterfacesFromSettings();

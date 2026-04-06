@@ -12,13 +12,14 @@ set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 include(ExternalAnalyzerSDK)
 
-set(SOURCES 
+set(SOURCES
 src/FlexRayAnalyzer.cpp
 src/FlexRayAnalyzer.h
 src/FlexRayAnalyzerResults.cpp
 src/FlexRayAnalyzerResults.h
 src/FlexRayAnalyzerSettings.cpp
 src/FlexRayAnalyzerSettings.h
+src/FlexRayCommon.h
 src/FlexRaySimulationDataGenerator.cpp
 src/FlexRaySimulationDataGenerator.h
 )

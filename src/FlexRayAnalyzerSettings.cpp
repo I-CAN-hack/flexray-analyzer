@@ -49,10 +49,6 @@ FlexRayAnalyzerSettings::FlexRayAnalyzerSettings()
 	AddChannel( mInputChannel, "FlexRay", false );
 }
 
-FlexRayAnalyzerSettings::~FlexRayAnalyzerSettings()
-{
-}
-
 bool FlexRayAnalyzerSettings::SetSettingsFromInterfaces()
 {
 	mInputChannel = mInputChannelInterface.GetChannel();

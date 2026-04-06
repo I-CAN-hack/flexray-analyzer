@@ -2,11 +2,11 @@
 
 #include <AnalyzerHelpers.h>
 #include <fstream>
-#include <iomanip>
 #include <sstream>
 
 #include "FlexRayAnalyzer.h"
 #include "FlexRayAnalyzerSettings.h"
+#include "FlexRayCommon.h"
 
 namespace
 {
@@ -17,31 +17,12 @@ std::string GetDisplayString( U64 value, DisplayBase display_base, U32 bit_count
 	return buffer;
 }
 
-std::string GetPayloadString( const std::vector<U8>& payload )
-{
-	if( payload.empty() == true )
-		return "-";
-
-	std::ostringstream stream;
-	stream << std::hex << std::uppercase << std::setfill( '0' );
-
-	for( size_t i = 0; i < payload.size(); ++i )
-	{
-		if( i != 0 )
-			stream << ' ';
-
-		stream << std::setw( 2 ) << static_cast<U32>( payload[ i ] );
-	}
-
-	return stream.str();
-}
-
 std::string GetFrameSummary( const FlexRayFrameRecord& record, DisplayBase display_base )
 {
-	if( record.mIsError == true )
+	if( record.mIsError )
 		return record.mErrorText;
 
-	if( record.mSymbolName.empty() == false )
+	if( !record.mSymbolName.empty() )
 	{
 		if( record.mSymbolName == "WUP" && record.mWakeupSymbolCount != 0 )
 		{
@@ -59,15 +40,15 @@ std::string GetFrameSummary( const FlexRayFrameRecord& record, DisplayBase displ
 		   << " Cyc " << GetDisplayString( record.mCycle, display_base, 6 )
 		   << " Len " << static_cast<U32>( record.mPayload.size() ) << "B";
 
-	if( record.mHeaderCrcOk == false || record.mFrameCrcOk == false )
+	if( !record.mHeaderCrcOk || !record.mFrameCrcOk )
 		stream << " CRC ERR";
 	else
 		stream << " CRC OK";
 
-	if( record.mTssBelowTxSpec == true )
+	if( record.mTssBelowTxSpec )
 		stream << " TSS WARN";
 
-	if( record.mCidOk == false )
+	if( !record.mCidOk )
 		stream << " CID WARN";
 
 	return stream.str();
@@ -78,10 +59,6 @@ FlexRayAnalyzerResults::FlexRayAnalyzerResults( FlexRayAnalyzer* analyzer, FlexR
 :	AnalyzerResults(),
 	mSettings( settings ),
 	mAnalyzer( analyzer )
-{
-}
-
-FlexRayAnalyzerResults::~FlexRayAnalyzerResults()
 {
 }
 
@@ -116,7 +93,7 @@ void FlexRayAnalyzerResults::GenerateBubbleText( U64 frame_index, Channel& chann
 	const FlexRaySegmentRecord& record = GetSegmentRecord( frame_index );
 	AddResultString( record.mShortText.c_str() );
 
-	if( record.mLongText.empty() == false && record.mLongText != record.mShortText )
+	if( !record.mLongText.empty() && record.mLongText != record.mShortText )
 		AddResultString( record.mLongText.c_str() );
 }
 
@@ -139,11 +116,11 @@ void FlexRayAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 		char time_str[128];
 		AnalyzerHelpers::GetTimeString( record.mStartSample, trigger_sample, sample_rate, time_str, 128 );
 
-		if( record.mIsError == true )
+		if( record.mIsError )
 		{
 			file_stream << time_str << ",error,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,\"" << record.mErrorText << "\"" << std::endl;
 		}
-		else if( record.mSymbolName.empty() == false )
+		else if( !record.mSymbolName.empty() )
 		{
 			const std::string summary = GetFrameSummary( record, display_base );
 			file_stream << time_str << ",symbol," << record.mSymbolName << ",-,-,-,-,-,-,-,-,-,-,-,-,-,-,\"" << summary << "\"" << std::endl;
@@ -166,12 +143,12 @@ void FlexRayAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 						<< "," << ( record.mHeaderCrcOk ? "true" : "false" )
 						<< "," << GetDisplayString( record.mFrameCrc, display_base, 24 )
 						<< "," << ( record.mFrameCrcOk ? "true" : "false" )
-						<< ",\"" << GetPayloadString( record.mPayload ) << "\""
+						<< ",\"" << FormatPayload( record.mPayload ) << "\""
 						<< ",\"" << GetFrameSummary( record, display_base ) << "\""
 						<< std::endl;
 		}
 
-		if( UpdateExportProgressAndCheckForCancel( i, num_packets ) == true )
+		if( UpdateExportProgressAndCheckForCancel( i, num_packets ) )
 		{
 			file_stream.close();
 			return;
