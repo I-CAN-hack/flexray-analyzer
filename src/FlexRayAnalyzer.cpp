@@ -591,20 +591,22 @@ void FlexRayAnalyzer::WorkerThread()
 		}
 		++bit_index;
 
+		const U64 fss_segment_start_sample = segment_start( fss_sample );
+
 		{
 			std::ostringstream tss_text;
 			tss_text << "Transmission start sequence (" << observed_tss_bits << " bits";
 			if( record.mTssBelowTxSpec == true )
 				tss_text << ", accepted on RX, below transmitter spec 3-15 bits";
 			tss_text << ")";
-			add_segment( tss_start_sample, tss_end_sample > 0 ? ( tss_end_sample - 1 ) : tss_end_sample, FlexRayTssField,
+			add_segment( tss_start_sample, fss_segment_start_sample, FlexRayTssField,
 						 record.mTssBelowTxSpec ? DISPLAY_AS_WARNING_FLAG : 0, "TSS", tss_text.str(), "tss_field", &packet_has_segments,
 						 [&]( FrameV2& frame_v2 ) {
 							 frame_v2.AddByte( "low_bits", static_cast<U8>( observed_tss_bits ) );
 							 frame_v2.AddBoolean( "tx_spec_ok", record.mTssBelowTxSpec == false );
 						 } );
 		}
-		add_segment( segment_start( fss_sample ), segment_end( fss_sample ), FlexRayFssField, 0, "FSS", "Frame start sequence", "fss_field",
+		add_segment( fss_segment_start_sample, segment_end( fss_sample ), FlexRayFssField, 0, "FSS", "Frame start sequence", "fss_field",
 					 &packet_has_segments );
 
 		U8 first_header_byte = 0;
@@ -686,7 +688,7 @@ void FlexRayAnalyzer::WorkerThread()
 			{
 				auto header_subfield_start_sample = [&]( U32 bit_offset ) {
 					if( ( bit_offset % 8 ) == 0 )
-						return header_byte_start_samples.at( bit_offset / 8 );
+						return segment_start( header_byte_start_samples.at( bit_offset / 8 ) );
 
 					return segment_start( header_bit_samples.at( bit_offset ) );
 				};
