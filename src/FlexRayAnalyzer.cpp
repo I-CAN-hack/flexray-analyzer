@@ -38,6 +38,7 @@ struct WakeupTiming
 	U32 mRxLowMaxBits = 0;
 	U32 mRxIdleMinBits = 0;
 	U32 mRxWindowBits = 0;
+	U32 mTxIdleBits = 0;
 };
 
 enum class FlexRayMarkerType : U8
@@ -88,12 +89,14 @@ WakeupTiming GetWakeupTiming( U32 bit_rate )
 		timing.mRxLowMaxBits = 14;
 		timing.mRxIdleMinBits = 14;
 		timing.mRxWindowBits = 76;
+		timing.mTxIdleBits = 45;
 		break;
 	case 5000000:
 		timing.mRxLowMinBits = 23;
 		timing.mRxLowMaxBits = 29;
 		timing.mRxIdleMinBits = 29;
 		timing.mRxWindowBits = 151;
+		timing.mTxIdleBits = 90;
 		break;
 	case 10000000:
 	default:
@@ -101,6 +104,7 @@ WakeupTiming GetWakeupTiming( U32 bit_rate )
 		timing.mRxLowMaxBits = 59;
 		timing.mRxIdleMinBits = 59;
 		timing.mRxWindowBits = 301;
+		timing.mTxIdleBits = 180;
 		break;
 	}
 
@@ -282,13 +286,17 @@ void FlexRayAnalyzer::WorkerThread()
 		if( observed_tss_bits >= wakeup_timing.mRxLowMinBits && observed_tss_bits <= wakeup_timing.mRxLowMaxBits &&
 			observed_post_low_high_bits >= wakeup_timing.mRxIdleMinBits )
 		{
-			const U64 wakeup_end_sample = first_edge_after_tss > 0 ? first_edge_after_tss - 1 : first_edge_after_tss;
+			const U32 displayed_idle_bits = std::min( observed_post_low_high_bits, wakeup_timing.mTxIdleBits );
+			const U64 nominal_wakeup_end_sample =
+				tss_end_sample + static_cast<U64>( std::max( 1L, std::lround( bit_width * static_cast<double>( displayed_idle_bits ) ) ) ) - 1;
+			const U64 wakeup_end_sample =
+				first_edge_after_tss > 0 ? std::min( nominal_wakeup_end_sample, first_edge_after_tss - 1 ) : nominal_wakeup_end_sample;
 			std::ostringstream wakeup_text;
-			wakeup_text << "Wakeup symbol (" << observed_tss_bits << " low, " << observed_post_low_high_bits << " idle bits)";
+			wakeup_text << "Wakeup symbol (" << observed_tss_bits << " low, " << displayed_idle_bits << " idle bits)";
 			add_segment( tss_start_sample, wakeup_end_sample, FlexRayWakeupSymbolField, 0, "WUS", wakeup_text.str(), "wakeup_symbol", nullptr,
 						 [&]( FrameV2& frame_v2 ) {
 							 frame_v2.AddByte( "low_bits", static_cast<U8>( observed_tss_bits ) );
-							 frame_v2.AddByte( "idle_bits", static_cast<U8>( observed_post_low_high_bits ) );
+							 frame_v2.AddByte( "idle_bits", static_cast<U8>( displayed_idle_bits ) );
 						 } );
 
 			if( have_pending_wakeup_pattern &&
