@@ -7,28 +7,58 @@ import os
 from collections import Counter
 from pathlib import Path
 import shutil
+import sys
 import time
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from saleae import automation
 
+def resolve_logic2_executable(path: Path) -> Path:
+    if path.suffix == ".app":
+        path = path / "Contents" / "MacOS" / "Logic"
+
+    return path.expanduser().resolve()
+
+
 def resolve_logic2_binary(explicit_path: str | None) -> Path:
     if explicit_path is not None:
-        path = Path(explicit_path).expanduser().resolve()
+        path = resolve_logic2_executable(Path(explicit_path))
         if path.exists():
             return path
         raise FileNotFoundError(f"Logic 2 binary not found: {path}")
 
+    if sys.platform == "darwin":
+        for candidate in (
+            Path("/Applications/Saleae Logic.app"),
+            Path.home() / "Applications" / "Saleae Logic.app",
+        ):
+            resolved = resolve_logic2_executable(candidate)
+            if resolved.exists():
+                return resolved
+
     resolved = shutil.which("saleae-logic2")
     if resolved is None:
-        raise FileNotFoundError("Could not locate `saleae-logic2` on PATH. Pass --logic2.")
+        raise FileNotFoundError("Could not locate Logic 2. Pass --logic2 or install `saleae-logic2` on PATH.")
 
     return Path(resolved).resolve()
 
 
+def resolve_logic2_config_path() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Logic" / "config.json"
+
+    return Path.home() / ".config" / "Logic" / "config.json"
+
+
 def configure_custom_analyzers_path(analyzers_dir: Path) -> Path:
-    config_path = Path.home() / ".config" / "Logic" / "config.json"
-    config = json.loads(config_path.read_text())
+    config_path = resolve_logic2_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if config_path.exists():
+        config = json.loads(config_path.read_text())
+    else:
+        config = {}
+
     config["customAnalyzerPaths"] = [str(analyzers_dir)]
     config_path.write_text(json.dumps(config, indent=4) + "\n")
     return config_path
@@ -224,7 +254,7 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
 
     parser = argparse.ArgumentParser(description="Validate the FlexRay analyzer against a Logic 2 capture or demo simulation.")
-    parser.add_argument("--logic2", help="Path to the Logic 2 binary or AppImage.")
+    parser.add_argument("--logic2", help="Path to the Logic 2 executable, .app bundle, or AppImage.")
     parser.add_argument("--mode", choices=["capture", "demo"], default="capture", help="Load a .sal capture or record from the Logic 2 simulation device.")
     parser.add_argument("--capture", default=str(root / "assets" / "SP2018_FlexRay.sal"), help="Path to the .sal capture.")
     parser.add_argument("--output-dir", default=str(root / "build" / "automation"), help="Directory for exported CSV files.")
@@ -272,7 +302,8 @@ def main() -> int:
     if analyzers_dir.exists() is False:
         raise FileNotFoundError(f"Analyzer output directory not found: {analyzers_dir}")
 
-    os.environ.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
     config_path = configure_custom_analyzers_path(analyzers_dir)
 
     manager = automation.Manager.launch(
