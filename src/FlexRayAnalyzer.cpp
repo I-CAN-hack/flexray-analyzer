@@ -35,7 +35,6 @@ struct ClockRecoveryState
 struct WakeupTiming
 {
 	U32 mRxLowMinBits = 0;
-	U32 mRxLowMaxBits = 0;
 	U32 mRxIdleMinBits = 0;
 	U32 mRxWindowBits = 0;
 	U32 mTxIdleBits = 0;
@@ -86,14 +85,12 @@ WakeupTiming GetWakeupTiming( U32 bit_rate )
 	{
 	case 2500000:
 		timing.mRxLowMinBits = 11;
-		timing.mRxLowMaxBits = 14;
 		timing.mRxIdleMinBits = 14;
 		timing.mRxWindowBits = 76;
 		timing.mTxIdleBits = 45;
 		break;
 	case 5000000:
 		timing.mRxLowMinBits = 23;
-		timing.mRxLowMaxBits = 29;
 		timing.mRxIdleMinBits = 29;
 		timing.mRxWindowBits = 151;
 		timing.mTxIdleBits = 90;
@@ -101,7 +98,6 @@ WakeupTiming GetWakeupTiming( U32 bit_rate )
 	case 10000000:
 	default:
 		timing.mRxLowMinBits = 46;
-		timing.mRxLowMaxBits = 59;
 		timing.mRxIdleMinBits = 59;
 		timing.mRxWindowBits = 301;
 		timing.mTxIdleBits = 180;
@@ -282,9 +278,10 @@ void FlexRayAnalyzer::WorkerThread()
 		const U64 first_edge_after_tss = mInput->GetSampleOfNextEdge();
 		const double high_after_tss_samples = static_cast<double>( first_edge_after_tss - tss_end_sample );
 		const U32 observed_post_low_high_bits = RoundBitsFromSamples( first_edge_after_tss - tss_end_sample, bit_width );
+		const double observed_wakeup_symbol_window_samples = static_cast<double>( first_edge_after_tss - tss_start_sample );
 
-		if( observed_tss_bits >= wakeup_timing.mRxLowMinBits && observed_tss_bits <= wakeup_timing.mRxLowMaxBits &&
-			observed_post_low_high_bits >= wakeup_timing.mRxIdleMinBits )
+		if( observed_tss_bits >= wakeup_timing.mRxLowMinBits && observed_post_low_high_bits >= wakeup_timing.mRxIdleMinBits &&
+			observed_wakeup_symbol_window_samples + ( bit_width * 0.25 ) <= maximum_wakeup_window_samples )
 		{
 			const U32 displayed_idle_bits = std::min( observed_post_low_high_bits, wakeup_timing.mTxIdleBits );
 			const U64 nominal_wakeup_end_sample =
@@ -321,6 +318,19 @@ void FlexRayAnalyzer::WorkerThread()
 
 		if( have_pending_wakeup_pattern )
 			flush_pending_wakeup_pattern();
+
+		if( observed_tss_bits >= kCasRxLowMinBits && observed_tss_bits <= kCasRxLowMaxBits && high_after_tss_samples > ( bit_width * 2.75 ) )
+		{
+			const U64 cas_end_sample = segment_end( tss_end_sample > 0 ? ( tss_end_sample - 1 ) : tss_end_sample );
+			add_segment( tss_start_sample, cas_end_sample, FlexRayCasField, 0, "CAS", "Collision avoidance symbol", "cas_field", nullptr,
+						 [&]( FrameV2& frame_v2 ) { frame_v2.AddByte( "low_bits", static_cast<U8>( observed_tss_bits ) ); } );
+
+			FlexRayFrameRecord record;
+			record.mTssBits = observed_tss_bits;
+			record.mSymbolName = "CAS";
+			commit_record( tss_start_sample, cas_end_sample, 0, std::move( record ) );
+			continue;
+		}
 
 		if( high_after_tss_samples < ( bit_width * 1.25 ) || high_after_tss_samples > ( bit_width * 2.75 ) )
 			continue;
