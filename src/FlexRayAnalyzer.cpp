@@ -279,9 +279,14 @@ void FlexRayAnalyzer::WorkerThread()
 		const double high_after_tss_samples = static_cast<double>( first_edge_after_tss - tss_end_sample );
 		const U32 observed_post_low_high_bits = RoundBitsFromSamples( first_edge_after_tss - tss_end_sample, bit_width );
 		const double observed_wakeup_symbol_window_samples = static_cast<double>( first_edge_after_tss - tss_start_sample );
+		const U32 relaxed_wakeup_low_min_bits =
+			std::max( kCasRxLowMinBits, static_cast<U32>( std::lround( static_cast<double>( wakeup_timing.mRxLowMinBits ) * 0.875 ) ) );
+		const bool wakeup_low_idle_ok =
+			observed_tss_bits >= relaxed_wakeup_low_min_bits && observed_post_low_high_bits >= wakeup_timing.mRxIdleMinBits;
+		const bool wakeup_fits_rx_window =
+			observed_wakeup_symbol_window_samples + ( bit_width * 0.25 ) <= maximum_wakeup_window_samples;
 
-		if( observed_tss_bits >= wakeup_timing.mRxLowMinBits && observed_post_low_high_bits >= wakeup_timing.mRxIdleMinBits &&
-			observed_wakeup_symbol_window_samples + ( bit_width * 0.25 ) <= maximum_wakeup_window_samples )
+		if( wakeup_low_idle_ok && ( wakeup_fits_rx_window || have_pending_wakeup_pattern ) )
 		{
 			const U32 displayed_idle_bits = std::min( observed_post_low_high_bits, wakeup_timing.mTxIdleBits );
 			const U64 nominal_wakeup_end_sample =
