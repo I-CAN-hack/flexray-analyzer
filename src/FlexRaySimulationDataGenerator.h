@@ -1,6 +1,7 @@
 #ifndef FLEXRAY_SIMULATION_DATA_GENERATOR
 #define FLEXRAY_SIMULATION_DATA_GENERATOR
 
+#include <AnalyzerHelpers.h>
 #include <SimulationChannelDescriptor.h>
 #include <vector>
 
@@ -22,7 +23,7 @@ protected:
 
 	FlexRayAnalyzerSettings* mSettings;
 	U32 mSimulationSampleRateHz;
-	U32 mSamplesPerBit;
+	ClockGenerator mBitClock;
 	U64 mFrameCounter;
 	SimulationChannelDescriptor mSimulationData;
 };

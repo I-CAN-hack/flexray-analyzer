@@ -152,14 +152,39 @@ def summarize_legacy_export(export_path: Path) -> dict[str, object]:
     return summary
 
 
-def find_simulation_device(manager: automation.Manager) -> automation.DeviceDesc:
-    devices = manager.get_devices(include_simulation_devices=True)
+def format_device_type(device: automation.DeviceDesc) -> str:
+    return getattr(device.device_type, "name", str(device.device_type))
+
+
+def find_requested_simulation_device(
+    manager: automation.Manager, requested_device: str, sample_rate: int
+) -> automation.DeviceDesc:
+    devices = [device for device in manager.get_devices(include_simulation_devices=True) if device.is_simulation]
+
+    if not devices:
+        raise RuntimeError("No Logic 2 simulation device was reported by the automation API.")
+
+    if requested_device == "auto":
+        if sample_rate > 100_000_000:
+            for preferred_type in ("LOGIC_PRO_8", "LOGIC_PRO_16"):
+                for device in devices:
+                    if format_device_type(device) == preferred_type:
+                        return device
+
+        return devices[0]
+
+    requested_type = {
+        "logic8": "LOGIC_8",
+        "pro8": "LOGIC_PRO_8",
+        "pro16": "LOGIC_PRO_16",
+    }[requested_device]
 
     for device in devices:
-        if device.is_simulation:
+        if format_device_type(device) == requested_type:
             return device
 
-    raise RuntimeError("No Logic 2 simulation device was reported by the automation API.")
+    available = ", ".join(format_device_type(device) for device in devices)
+    raise RuntimeError(f"Requested simulation device {requested_type} was not available. Found: {available}")
 
 
 def validate_demo_summary(summary: dict[str, object]) -> None:
@@ -180,7 +205,7 @@ def run_demo_capture(
     output_dir: Path,
     manual_rerun_capture_path: Path,
 ) -> tuple[automation.Capture, automation.AnalyzerHandle, str]:
-    device = find_simulation_device(manager)
+    device = find_requested_simulation_device(manager, args.simulation_device, args.sample_rate)
     capture = manager.start_capture(
         device_id=device.device_id,
         device_configuration=automation.LogicDeviceConfiguration(
@@ -204,29 +229,19 @@ def run_demo_capture(
         print("You can inspect Logic 2 now, and press Run manually during this pause if needed.")
         time.sleep(args.demo_pause_seconds)
 
-    if args.manual_rerun:
-        prepared_capture_path = manual_rerun_capture_path
-        print(f"Analyzer added to the demo capture at {args.bitrate} bit/s.")
-        print(f"Rerun the capture in the Logic 2 GUI, save it to {prepared_capture_path}, then press Enter here.")
+    prepared_capture_path = manual_rerun_capture_path
+    print(f"Analyzer added to the demo capture at {args.bitrate} bit/s.")
+    print("Logic 2's automation API does not expose a rerun helper for analyzer demo data.")
+    print(f"Rerun the capture in the Logic 2 GUI, save it to {prepared_capture_path}, then press Enter here.")
+    try:
         input()
+    except EOFError as exc:
+        raise RuntimeError(
+            "Demo mode requires an interactive terminal so you can rerun the capture in Logic 2 and save the resulting .sal file."
+        ) from exc
 
-        if prepared_capture_path.exists() is False:
-            raise FileNotFoundError(f"Manual rerun capture not found: {prepared_capture_path}")
-    else:
-        prepared_capture_path = output_dir / "flexray_demo_auto.sal"
-        try:
-            capture.save_capture(str(prepared_capture_path))
-        except automation.errors.InvalidRequestError as exc:
-            if 'does not exist' not in str(exc):
-                raise
-
-            prepared_capture_path = manual_rerun_capture_path
-            print("The demo capture was rerun in the GUI during the pause, so the original automation capture no longer exists.")
-            print(f"Save the current Logic 2 capture to {prepared_capture_path}, then press Enter here.")
-            input()
-
-            if prepared_capture_path.exists() is False:
-                raise FileNotFoundError(f"Fallback demo capture not found: {prepared_capture_path}") from exc
+    if prepared_capture_path.exists() is False:
+        raise FileNotFoundError(f"Manual rerun capture not found: {prepared_capture_path}")
 
     prepared_capture_for_api = create_capture_without_saved_analyzers(
         prepared_capture_path,
@@ -238,14 +253,14 @@ def run_demo_capture(
     analyzer = add_flexray_analyzer(capture, args)
 
     source_description = (
+        f"Simulation:    {format_device_type(device)} ({device.device_id})\n"
         f"Demo capture:  {prepared_capture_path}\n"
         f"API capture:   {prepared_capture_for_api}\n"
         f"Sample rate:   {args.sample_rate}\n"
         f"Bit rate:      {args.bitrate}"
     )
 
-    if args.manual_rerun is False:
-        source_description += "\nFlow:          automated two-pass demo setup"
+    source_description += "\nFlow:          manual rerun after analyzer add"
 
     return capture, analyzer, source_description
 
@@ -255,12 +270,23 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Validate the FlexRay analyzer against a Logic 2 capture or demo simulation.")
     parser.add_argument("--logic2", help="Path to the Logic 2 executable, .app bundle, or AppImage.")
-    parser.add_argument("--mode", choices=["capture", "demo"], default="capture", help="Load a .sal capture or record from the Logic 2 simulation device.")
+    parser.add_argument(
+        "--mode",
+        choices=["capture", "demo"],
+        default="capture",
+        help="Load a .sal capture or use the Logic 2 simulation device, then manually rerun the demo after adding the analyzer.",
+    )
     parser.add_argument("--capture", default=str(root / "assets" / "SP2018_FlexRay.sal"), help="Path to the .sal capture.")
     parser.add_argument("--output-dir", default=str(root / "build" / "automation"), help="Directory for exported CSV files.")
     parser.add_argument("--analyzers-dir", default=str(root / "build" / "Analyzers"), help="Directory containing libFlexRayAnalyzer.so.")
     parser.add_argument("--channel", type=int, default=0, help="Digital channel index for the FlexRay signal.")
     parser.add_argument("--bitrate", type=int, default=10_000_000, choices=[2_500_000, 5_000_000, 10_000_000], help="FlexRay bit rate.")
+    parser.add_argument(
+        "--simulation-device",
+        choices=["auto", "logic8", "pro8", "pro16"],
+        default="auto",
+        help="Simulation device to use in demo mode. Auto prefers Pro devices when the requested sample rate exceeds 100 MS/s.",
+    )
     parser.add_argument(
         "--sample-rate",
         type=int,
@@ -279,7 +305,7 @@ def main() -> int:
     parser.add_argument(
         "--manual-rerun",
         action="store_true",
-        help="For demo mode: pause after adding the analyzer so you can rerun the capture in the GUI, save it, and then export that saved capture.",
+        help="Deprecated compatibility flag. Demo mode now always requires a manual rerun after adding the analyzer.",
     )
     parser.add_argument(
         "--manual-rerun-capture",
@@ -357,4 +383,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1)

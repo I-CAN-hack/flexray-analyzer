@@ -31,7 +31,6 @@ std::vector<U8> BitsToBytes( const std::vector<U8>& bits )
 FlexRaySimulationDataGenerator::FlexRaySimulationDataGenerator()
 :	mSettings( nullptr ),
 	mSimulationSampleRateHz( 0 ),
-	mSamplesPerBit( 0 ),
 	mFrameCounter( 0 )
 {
 }
@@ -40,7 +39,7 @@ void FlexRaySimulationDataGenerator::Initialize( U32 simulation_sample_rate, Fle
 {
 	mSimulationSampleRateHz = simulation_sample_rate;
 	mSettings = settings;
-	mSamplesPerBit = std::max<U32>( 1, mSimulationSampleRateHz / mSettings->mBitRate );
+	mBitClock.Init( static_cast<double>( mSettings->mBitRate ), mSimulationSampleRateHz );
 
 	mSimulationData.SetChannel( mSettings->mInputChannel );
 	mSimulationData.SetSampleRate( simulation_sample_rate );
@@ -144,7 +143,7 @@ void FlexRaySimulationDataGenerator::OutputBit( U8 wire_bit, U32 bit_count )
 {
 	const U8 physical_bit = mSettings->mInvertInput ? ( wire_bit ^ 0x1 ) : wire_bit;
 	mSimulationData.TransitionIfNeeded( physical_bit != 0 ? BIT_HIGH : BIT_LOW );
-	mSimulationData.Advance( mSamplesPerBit * bit_count );
+	mSimulationData.Advance( mBitClock.AdvanceByTimeS( static_cast<double>( bit_count ) / static_cast<double>( mSettings->mBitRate ) ) );
 }
 
 void FlexRaySimulationDataGenerator::OutputExtendedByte( U8 value )
