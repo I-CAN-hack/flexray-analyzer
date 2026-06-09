@@ -33,6 +33,21 @@ Built analyzer:
 build/Analyzers/libFlexRayAnalyzer.so
 ```
 
+## Release Build
+
+Build optimized release artifacts in a separate build directory:
+
+```bash
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --config Release
+```
+
+Release analyzer:
+
+```text
+build-release/Analyzers/libFlexRayAnalyzer.so
+```
+
 ## Decoding Example
 
 ![FlexRay decoding screenshot](docs/decoding.png)
