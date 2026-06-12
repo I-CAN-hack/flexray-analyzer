@@ -196,6 +196,16 @@ void FlexRayAnalyzer::WorkerThread()
 		mResults->AddFrameV2( frame_v2, frame_v2_type, start_sample, std::max( start_sample, end_sample ) );
 	};
 
+	U64 reported_progress_sample = 0;
+
+	auto report_progress = [&]( U64 sample_number ) {
+		if( sample_number > reported_progress_sample )
+		{
+			reported_progress_sample = sample_number;
+			ReportProgress( reported_progress_sample );
+		}
+	};
+
 	auto commit_record = [&]( U64 start_sample, U64 end_sample, U8 frame_flags, FlexRayFrameRecord record ) {
 		record.mStartSample = start_sample;
 		record.mEndSample = end_sample;
@@ -204,7 +214,7 @@ void FlexRayAnalyzer::WorkerThread()
 							 mSettings.mInputChannel );
 		mResults->CommitFlexRayPacket( std::move( record ) );
 		mResults->CommitResults();
-		ReportProgress( end_sample );
+		report_progress( end_sample );
 		CheckIfThreadShouldExit();
 	};
 
@@ -234,6 +244,12 @@ void FlexRayAnalyzer::WorkerThread()
 
 	for( ;; )
 	{
+		// Report progress and honor cancellation even when no packets are being
+		// committed (idle line, noise, wrong settings), so the analyzer never
+		// appears stuck and can always be removed or re-run promptly.
+		report_progress( mInput->GetSampleNumber() );
+		CheckIfThreadShouldExit();
+
 		U64 preceding_high_start_sample = 0;
 		U64 tss_start_sample = 0;
 		bool bypass_idle_check = false;
