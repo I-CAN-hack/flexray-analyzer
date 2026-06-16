@@ -64,24 +64,38 @@ FlexRayAnalyzerResults::FlexRayAnalyzerResults( FlexRayAnalyzer* analyzer, FlexR
 
 void FlexRayAnalyzerResults::AddFlexRaySegment( const Frame& frame, FlexRaySegmentRecord record )
 {
-	mSegmentRecords.push_back( std::move( record ) );
+	{
+		std::lock_guard<std::mutex> lock( mRecordsMutex );
+		mSegmentRecords.push_back( std::move( record ) );
+	}
 	AddFrame( frame );
 }
 
 U64 FlexRayAnalyzerResults::CommitFlexRayPacket( FlexRayFrameRecord record )
 {
-	mPacketRecords.push_back( std::move( record ) );
+	{
+		std::lock_guard<std::mutex> lock( mRecordsMutex );
+		mPacketRecords.push_back( std::move( record ) );
+	}
 	return CommitPacketAndStartNewPacket();
 }
 
-const FlexRaySegmentRecord& FlexRayAnalyzerResults::GetSegmentRecord( U64 frame_index ) const
+FlexRaySegmentRecord FlexRayAnalyzerResults::GetSegmentRecord( U64 frame_index ) const
 {
+	std::lock_guard<std::mutex> lock( mRecordsMutex );
 	return mSegmentRecords.at( static_cast<size_t>( frame_index ) );
 }
 
-const FlexRayFrameRecord& FlexRayAnalyzerResults::GetPacketRecord( U64 packet_index ) const
+FlexRayFrameRecord FlexRayAnalyzerResults::GetPacketRecord( U64 packet_index ) const
 {
+	std::lock_guard<std::mutex> lock( mRecordsMutex );
 	return mPacketRecords.at( static_cast<size_t>( packet_index ) );
+}
+
+U64 FlexRayAnalyzerResults::GetPacketRecordCount() const
+{
+	std::lock_guard<std::mutex> lock( mRecordsMutex );
+	return static_cast<U64>( mPacketRecords.size() );
 }
 
 void FlexRayAnalyzerResults::GenerateBubbleText( U64 frame_index, Channel& channel, DisplayBase display_base )
@@ -90,7 +104,7 @@ void FlexRayAnalyzerResults::GenerateBubbleText( U64 frame_index, Channel& chann
 	(void)display_base;
 	ClearResultStrings();
 
-	const FlexRaySegmentRecord& record = GetSegmentRecord( frame_index );
+	const FlexRaySegmentRecord record = GetSegmentRecord( frame_index );
 	AddResultString( record.mShortText.c_str() );
 
 	if( !record.mLongText.empty() && record.mLongText != record.mShortText )
@@ -108,10 +122,10 @@ void FlexRayAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 	file_stream << "Time [s],Type,Segment,Frame ID,Cycle,TSS Bits,TSS TX Spec OK,Payload Bytes,PPI,NF,Sync,Startup,Header CRC,Header CRC OK,Frame CRC,Frame CRC OK,Payload,Info"
 				<< std::endl;
 
-	U64 num_packets = static_cast<U64>( mPacketRecords.size() );
+	U64 num_packets = GetPacketRecordCount();
 	for( U64 i = 0; i < num_packets; ++i )
 	{
-		const FlexRayFrameRecord& record = GetPacketRecord( i );
+		const FlexRayFrameRecord record = GetPacketRecord( i );
 
 		char time_str[128];
 		AnalyzerHelpers::GetTimeString( record.mStartSample, trigger_sample, sample_rate, time_str, 128 );
@@ -163,7 +177,7 @@ void FlexRayAnalyzerResults::GenerateFrameTabularText( U64 frame_index, DisplayB
 #ifdef SUPPORTS_PROTOCOL_SEARCH
 	(void)display_base;
 	ClearTabularText();
-	const FlexRaySegmentRecord& record = GetSegmentRecord( frame_index );
+	const FlexRaySegmentRecord record = GetSegmentRecord( frame_index );
 	AddTabularText( record.mLongText.empty() ? record.mShortText.c_str() : record.mLongText.c_str() );
 #endif
 }

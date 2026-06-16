@@ -2,6 +2,7 @@
 #define FLEXRAY_ANALYZER_RESULTS
 
 #include <AnalyzerResults.h>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -77,12 +78,17 @@ public:
 	U64 CommitFlexRayPacket( FlexRayFrameRecord record );
 
 protected:
-	const FlexRaySegmentRecord& GetSegmentRecord( U64 frame_index ) const;
-	const FlexRayFrameRecord& GetPacketRecord( U64 packet_index ) const;
+	// The worker thread appends records while the application reads them from other
+	// threads (bubble text, tabular text, export), so every access must hold the lock.
+	// The getters therefore return copies instead of references into the vectors.
+	FlexRaySegmentRecord GetSegmentRecord( U64 frame_index ) const;
+	FlexRayFrameRecord GetPacketRecord( U64 packet_index ) const;
+	U64 GetPacketRecordCount() const;
 
 protected:
 	FlexRayAnalyzerSettings* mSettings;
 	FlexRayAnalyzer* mAnalyzer;
+	mutable std::mutex mRecordsMutex;
 	std::vector<FlexRaySegmentRecord> mSegmentRecords;
 	std::vector<FlexRayFrameRecord> mPacketRecords;
 };
